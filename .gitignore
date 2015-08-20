@@ -1,0 +1,20 @@
+# distribution related
+MANIFEST
+dist
+cutiepy.egg-info
+
+# documentation related
+doc/_*
+.ipynb_checkpoints
+
+# compilation related
+examples/*.pyx
+_pyxbld
+__pycache__
+*.py[cod]
+
+# testing related
+htmlcov
+.coverage
+
+*.sw[po]
