@@ -51,7 +51,7 @@ from libc.math cimport sin, cos, exp, sinh, cosh, tan, tanh, log
 # The generated cython code
 cdef generated_function(
     # input arguments
-{arguments_declaration},
+    {arguments_declaration},
     # output argument
     {return_value.type} {return_value.name}
     ):
@@ -67,66 +67,69 @@ cdef generated_function(
 
 # Function to deliver the constants from python to cython
 cpdef setup_generated_function(
-{setup_arguments_declarations}
+    {setup_arguments_declarations}
     ):
     {predefined_constants_globals}
 {setup_expressions}
 '''
 class BaseCythonFunction():
     '''Represents a single code file.'''
-    main_call = ''
     def __init__(self):
         self.uid = uid()
-        self.arguments = []      # list of TypedNames
-        self.declarations = []   # list of TypedNames
-        self.expressions = []    # string forms of expressions 'name = expression of names'
-        self.return_value = None # TypedName
+        self.arguments = []
+        self.intermediate_results = []
+        self.expressions = []
+        self.return_value = None
         self.memoized = {}
-        self.setup_arguments = []
+        self.predefined_constants = []
+        self.predefined_constants_num = []
         self._compiled_mod = None
-    def globals_declaratioins_s(self):
+
+    def globals_declarations_s(self):
         s = '\n'.join('cdef {0.type} {0.name} = {0.allocate}'.format(_)
-                      for _ in self.declarations[:-1]+self.setup_arguments)
+                      for _ in
+                      self.intermediate_results[:-1]+self.predefined_constants)
         return s if s else '# no global declarations'
     def intermediate_results_globals_s(self):
-        s = ', '.join(_.name for _ in self.declarations)
+        s = ', '.join(_.name for _ in self.intermediate_results)
         return 'global %s'%s if s else '# no intermediate results globals'
     def predefined_constants_globals_s(self):
-        s = ', '.join(_.name for _ in self.setup_arguments)
+        s = ', '.join(_.name for _ in self.predefined_constants)
         return 'global %s'%s if s else '# no predefined constants globals'
     def arguments_s(self):
-        s = ',\n'.join('    {0.type} {0.name}'.format(_) for _ in self.arguments)
-        return s if s else '# no arguments'
+        s = ',\n    '.join('{0.type} {0.name}'.format(_) for _ in self.arguments)
+        return s if s else '    # no arguments'
     def expressions_s(self):
         s = '\n'.join('    %s'%_ for _ in self.expressions)
         return s if s else '    # no calculations'
     def setup_arguments_s(self):
-        s = ',\n'.join('    {0.type} _{0.name}'.format(_) for _ in self.setup_arguments)
-        return s if s else '# no arguments'
+        s = ',\n    '.join('{0.type} _{0.name}'.format(_) for _ in
+                           self.predefined_constants)
+        return s if s else '    # no arguments'
     def setup_expressions_s(self):
-        s = '\n'.join('    {0.name} = _{0.name}'.format(_) for _ in self.setup_arguments)
+        s = '\n'.join('    {0.name} = _{0.name}'.format(_) for _ in
+                self.predefined_constants)
         return s if s else '    pass # no setup'
+
     def argument_order(self, args):
-        self.setup_arguments = list(set(self.arguments+self.setup_arguments)
-                                    -{self.memoized[_] for _ in args if _ in self.memoized})
+        new_constants = list(set(self.arguments)-{self.memoized[_] for _ in args if _ in self.memoized})
+        self.predefined_constants += new_constants
+        self.predefined_constants_num += [self.rev_memoized()[_].numerical for _ in new_constants]
         def get_typedname(a):
             if a in self.memoized:
                 pass
             elif isinstance(a, Scalar):
                 self.memoized[a] = TypedName('double', next(self.uid), '0')
-            elif isinstance(a, Ket):
-                self.memoized[a] = TypedName('double complex [:, :]', next(self.uid), '0')
             else:
-                raise NotImplementedError('Unused argument with unknown cython type: %s'%a)
+                raise NotImplementedError('Unused nonscalar argument: %s'%a)
             return self.memoized[a]
         self.arguments = [get_typedname(_) for _ in args]
     def rev_memoized(self):
         return dict(zip(self.memoized.values(), self.memoized.keys()))
-    def numerical_setup_arguments(self):
-        return [self.rev_memoized()[_].numerical for _ in self.setup_arguments]
+
     def __str__(self):
         return base_cython_function_template.format(
-                   globals_declarations = self.globals_declaratioins_s(),
+                   globals_declarations = self.globals_declarations_s(),
                    intermediate_results_globals = self.intermediate_results_globals_s(),
                    predefined_constants_globals = self.predefined_constants_globals_s(),
                    arguments_declaration = self.arguments_s(),
@@ -163,9 +166,8 @@ class BaseCythonFunction():
                 finally:
                     os.remove(os.path.join(folder, extname+'.c'))
             self._compiled_mod = imp.load_dynamic(filename.split('.')[0],module_path)
-        self._compiled_mod.setup_generated_function(*self.numerical_setup_arguments())
+        self._compiled_mod.setup_generated_function(*self.predefined_constants_num)
         return self._compiled_mod
-
 
 
 _expr_to_func_memoized = {}
@@ -237,7 +239,7 @@ def _(expr, func):
     s = shape(expr)
     alloc = 'np.zeros(%s, dtype=np.complex)'%(s,) if s else '0'
     ret = TypedName(ret_values[-1].type, uid, alloc)
-    func.declarations.append(ret)
+    func.intermediate_results.append(ret)
     if s:
         func.expressions.append(variadic_add_m(ret_values, ret))
     else:
@@ -245,16 +247,16 @@ def _(expr, func):
     func.return_value = ret
     return func
 
-def mul_s_m(s, m, out):
+def mul_s_m(ss, m, out):
     return '''# {out} = {s}*{m}
     ii = {m}.shape[0]
     jj = {m}.shape[1]
     for i in range(ii):
         for j in range(jj):
             {out}[i,j] = {s}*{m}[i,j]'''.format(
-    out = out,
-    s = s,
-    m = m)
+    out = out.name,
+    s = '*'.join(_.name for _ in ss),
+    m = m.name)
 @_generate_cython.register(Mul)
 def _(expr, func):
     ret_values = [generate_cython(_, func).return_value for _ in expr]
@@ -262,11 +264,11 @@ def _(expr, func):
     s = shape(expr)
     alloc = 'np.zeros(%s, dtype=np.complex)'%(s,) if s else '0'
     ret = TypedName(ret_values[-1].type, uid, alloc)
-    func.declarations.append(ret)
+    func.intermediate_results.append(ret)
     if s:
-        func.expressions.append(mul_s_m('*'.join(_.name for _ in ret_values[:-1]),
-                                        ret_values[-1].name,
-                                        uid))
+        func.expressions.append(mul_s_m(ret_values[:-1],
+                                        ret_values[-1],
+                                        ret))
     else:
         func.expressions.append("%s = %s"%(uid, '*'.join(_.name for _ in ret_values)))
     func.return_value = ret
@@ -283,9 +285,9 @@ def dot(a, b, out):
             for k in range(kk):
                 c += {a}[i,k]*{b}[k,j]
             {out}[i,j] = c'''.format(
-    out = out,
-    a = a,
-    b = b)
+    out = out.name,
+    a = a.name,
+    b = b.name)
 @_generate_cython.register(Dot)
 def _(expr, func):
     if len(expr) != 2:
@@ -294,8 +296,8 @@ def _(expr, func):
     uid = next(func.uid)
     alloc = 'np.zeros(%s, dtype=np.complex)'%(shape(expr),) if shape(expr) else '0'
     ret = TypedName(ret_values[-1].type, uid, alloc)
-    func.declarations.append(ret)
-    exp = dot(ret_values[0].name, ret_values[1].name, ret.name)
+    func.intermediate_results.append(ret)
+    exp = dot(ret_values[0], ret_values[1], ret)
     func.expressions.append(exp)
     func.return_value = ret
     return func
@@ -305,7 +307,7 @@ def _(expr, func):
     uid = next(func.uid)
     arg = generate_cython(expr[0], func).return_value
     ret = TypedName('double', uid, '0')
-    func.declarations.append(ret)
+    func.intermediate_results.append(ret)
     func.expressions.append('%s = %s(%s)'%(
         uid,
         type(expr).__name__,
@@ -355,7 +357,6 @@ cpdef list pythonsolve(
     return res
 """
 class ODESolver(BaseCythonFunction):
-    main_call = 'pythonsolve'
     def __str__(self):
         string = super(ODESolver, self).__str__()
         string += linear_ode_solver_template.format(
