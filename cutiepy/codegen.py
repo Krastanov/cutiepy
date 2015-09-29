@@ -9,10 +9,11 @@ import numbers
 import tempfile
 
 import numpy as np
+from scipy.sparse import csr_matrix
 
 import cutiepy
 from .symbolic import (Scalar, NotScalar, ScalarFunction, Add, Mul, Pow, Dot,
-        TensorProd, dim, shape)
+        TensorProd, dim, shape, isnumerical)
 
 
 DEBUG = False
@@ -37,8 +38,8 @@ def uid():
     return (''.join(_) for _ in chain.from_iterable(product(alphabet, repeat=c) for c in count(1)))
 
 
-base_cython_function_template = '''
 #cython: boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True
+base_cython_function_template = '''
 cimport numpy as np
 import numpy as np
 from libc.math cimport sin, cos, exp, sinh, cosh, tan, tanh, log
@@ -86,9 +87,11 @@ class BaseCythonFunction():
         self._compiled_mod = None
 
     def globals_declarations_s(self):
-        s = '\n'.join('cdef {0.type} {0.name} = {0.allocate}'.format(_)
-                      for _ in
-                      self.intermediate_results[:-1]+self.predefined_constants)
+        s  = '\n'.join('cdef {0.type} {0.name} = {0.allocate}'.format(_)
+                       for _ in self.intermediate_results[:-1])
+        s += '\n'
+        s += '\n'.join('cdef {0.type} {0.name} # initialized in setup'.format(_)
+                       for _ in self.predefined_constants)
         return s if s else '# no global declarations'
     def intermediate_results_globals_s(self):
         s = ', '.join(_.name for _ in self.intermediate_results)
@@ -216,9 +219,19 @@ def _(expr, func):
 
 @_generate_cython.register(NotScalar)
 def _(expr, func):
-    uid = TypedName('double complex [:, :]', next(func.uid), 'np.zeros(%s, dtype=np.complex)'%(shape(expr),))
-    func.arguments.append(uid)
-    func.return_value = uid
+    uid = next(func.uid)
+    if isnumerical(expr) and isinstance(expr.numerical, csr_matrix): # can only be a predefined constant
+        ret = TypedName('double complex [:]', uid, None)
+        func.predefined_constants.append(ret)
+        func.predefined_constants.append(TypedName('int [:]', uid+'_pointers', None))
+        func.predefined_constants.append(TypedName('int [:]', uid+'_indices', None))
+        num = expr.numerical
+        func.predefined_constants_num.extend([num.data, num.indptr, num.indices])
+        func.return_value = ret
+    else: # can be both and argument or a predefined constant
+        ret = TypedName('double complex [:, :]', uid, 'np.zeros(%s, dtype=np.complex)'%(shape(expr),))
+        func.arguments.append(ret)
+        func.return_value = ret
     return func
 
 def variadic_add_m(args, out):
@@ -288,18 +301,37 @@ def dot(a, b, out):
     out = out.name,
     a = a.name,
     b = b.name)
+def dot_sparse(csr, vec, out):
+    return '''# {out} = {csr}.{vec}
+    ii = {csr}_pointers.shape[0]-1
+    for i in range(ii):
+        jj = {csr}_pointers[i]
+        kk = {csr}_pointers[i+1]
+        c = 0
+        for j in range(jj,kk):
+            k = {csr}_indices[j]
+            c += {csr}[j]*{vec}[k,0]
+        {out}[i,0] = c
+    '''.format(
+    out = out.name,
+    csr = csr.name,
+    vec = vec.name)
 @_generate_cython.register(Dot)
 def _(expr, func):
     if len(expr) != 2:
         raise NotImplementedError('Can not translate the dot products of more than two matrices %s to cython.'%expr)
-    ret_values = [generate_cython(_, func).return_value for _ in expr]
-    uid = next(func.uid)
+    mat_expr, vec_expr = expr
+    mat = generate_cython(mat_expr, func).return_value
+    vec = generate_cython(vec_expr, func).return_value
     alloc = 'np.zeros(%s, dtype=np.complex)'%(shape(expr),) if shape(expr) else '0'
-    ret = TypedName(ret_values[-1].type, uid, alloc)
+    uid = next(func.uid)
+    ret = TypedName(vec.type, uid, alloc)
     func.intermediate_results.append(ret)
-    exp = dot(ret_values[0], ret_values[1], ret)
-    func.expressions.append(exp)
     func.return_value = ret
+    if isnumerical(mat_expr) and isinstance(expr[0].numerical, csr_matrix):
+        func.expressions.append(dot_sparse(mat, vec, ret))
+    else:
+        func.expressions.append(dot(mat, vec, ret))
     return func
 
 @_generate_cython.register(ScalarFunction)
