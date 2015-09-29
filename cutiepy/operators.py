@@ -1,15 +1,36 @@
 import numpy as np
-
+from scipy.sparse import csr_matrix
 from .symbolic import Operator
 
+SPARSITY_N_CUTOFF = 6
+
+def sparsify(mat):
+    assert SPARSITY_N_CUTOFF > 5, 'The SPARSITY_N_CUTOFF is set to a very low number.'
+    if min(mat.shape) > SPARSITY_N_CUTOFF:
+        return csr_matrix(mat)
+    return mat
+
+
 def destroy(N):
-    return Operator('{a}_{%d}'%N,N,np.diag(np.arange(1,N,dtype=complex)**0.5,k=1))
+    return Operator('{a}_{%d}'%N,
+                    N,
+                    sparsify(np.diag(np.arange(1,N,dtype=complex)**0.5,k=1)))
+
 def create(N): #TODO name prints ugly
-    return Operator('{a^\dagger}_{%d}'%N,N,np.diag(np.arange(1,N,dtype=complex)**0.5,k=-1))
+    return Operator('{a^\dagger}_{%d}'%N,
+                    N,
+                    sparsify(np.diag(np.arange(1,N,dtype=complex)**0.5,k=-1)))
+
 def num(N):
-    return Operator('{n}_{%d}'%N,N,np.diag(np.arange(0,N,dtype=complex)))
+    return Operator('{n}_{%d}'%N,
+                    N,
+                    sparsify(np.diag(np.arange(0,N,dtype=complex))))
+
 def identity(N):
-    return Operator('{I}_{%d}'%N,N,np.eye(N,dtype=complex))
+    return Operator('{I}_{%d}'%N,
+                    N,
+                    sparsify(np.eye(N,dtype=complex)))
+
 
 s_m = np.array([[0, 0 ],[1 , 0]],dtype=complex)
 s_p = np.array([[0, 1 ],[0 , 0]],dtype=complex)
