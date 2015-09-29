@@ -38,11 +38,15 @@ def uid():
     return (''.join(_) for _ in chain.from_iterable(product(alphabet, repeat=c) for c in count(1)))
 
 
-#cython: boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True
 base_cython_function_template = '''
+#cython: boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True
 cimport numpy as np
 import numpy as np
 from libc.math cimport sin, cos, exp, sinh, cosh, tan, tanh, log
+from scipy.linalg.cython_blas cimport zgemv
+
+cdef int iONE=1, iZERO=0
+cdef double complex zONE=1, zZERO=0
 
 # Declaration of global variables for
 # - intermediate results
@@ -290,14 +294,8 @@ def _(expr, func):
 def dot(a, b, out):
     return '''# {out} = {a}.{b}
     ii = {a}.shape[0]
-    jj = {b}.shape[1]
-    kk = {b}.shape[0]
-    for i in range(ii):
-        for j in range(jj):
-            c = 0
-            for k in range(kk):
-                c += {a}[i,k]*{b}[k,j]
-            {out}[i,j] = c'''.format(
+    jj = {a}.shape[1]
+    zgemv('N', &ii, &jj, &zONE, &{a}[0,0], &ii, &{b}[0,0], &iONE, &zZERO, &{out}[0,0], &iONE)'''.format(
     out = out.name,
     a = a.name,
     b = b.name)
