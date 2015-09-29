@@ -2,13 +2,8 @@
 from cutiepy import *
 import pytest
 
-def sesolve_no_memoization(*args):
-    r = sesolve(*args)
-    cutiepy.codegen._expr_to_func_memoized = {}
-    return r
-
-@pytest.mark.incremental
 class TestSesolve:
+    @pytest.mark.slow
     def test_compile(self, benchmark):
         initial_state = basis(2, 0)
         ω0 = 1
@@ -16,11 +11,22 @@ class TestSesolve:
         Ω = 0.005
         ts = 2*np.pi/Ω*np.linspace(0,1,40)
         H = ω0/2 * sigmaz() + Ω * sigmax() * sin((ω0+Δ)*t)
-        type(self).rabi_args = H, initial_state, ts
-        type(self).res = benchmark(sesolve_no_memoization, *self.rabi_args)
+        def sesolve_no_memoization(*args):
+            r = sesolve(*args)
+            cutiepy.codegen._expr_to_func_memoized = {}
+            return r
+        rabi_args = H, initial_state, ts
+        benchmark(sesolve_no_memoization, *rabi_args)
 
     def test_rabi(self, benchmark):
-        benchmark(sesolve, *self.rabi_args)
+        initial_state = basis(2, 0)
+        ω0 = 1
+        Δ = 0.000
+        Ω = 0.005
+        ts = 2*np.pi/Ω*np.linspace(0,1,40)
+        H = ω0/2 * sigmaz() + Ω * sigmax() * sin((ω0+Δ)*t)
+        rabi_args = H, initial_state, ts
+        benchmark(sesolve, *rabi_args)
 
     def test_rabi_rwa(self, benchmark):
         initial_state = basis(2, 0)
