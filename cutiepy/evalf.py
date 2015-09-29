@@ -77,6 +77,7 @@ def _(expr):
             reduced.extend(group)
     return Dot(*reduced)
 
+kron = lambda l,r: scipy.sparse.kron(l,r, 'csr')
 @evalf.register(TensorProd)
 def _(expr):
     groups = itertools.groupby(map(evalf, expr), isnumerical)
@@ -84,7 +85,7 @@ def _(expr):
     for key, group in groups:
         group = list(group)
         if key:
-            num = functools.reduce(scipy.linalg.kron, map(numerical, group))
+            num = functools.reduce(kron, map(numerical, group))
             sym = TensorProd(*group)
             reduced.append(shapetype(sym).anon(dims(sym), num))
         else:

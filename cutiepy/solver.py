@@ -15,5 +15,8 @@ def sesolve(H, state0, tlist,
                          argument_order = [t, y_anon])
     ccf = cf.compiled()
     state0_dim = dims(state0)
-    res = ccf.pythonsolve(tlist, numerical(evalf(state0)), mxsteps, rtol, atol)
+    state0_dense_array = numerical(evalf(state0))
+    if not isinstance(state0_dense_array, np.ndarray):
+        state0_dense_array = state0_dense_array.toarray()
+    res = ccf.pythonsolve(tlist, state0_dense_array, mxsteps, rtol, atol)
     return [Ket.anon(state0_dim,_) for _ in res]
