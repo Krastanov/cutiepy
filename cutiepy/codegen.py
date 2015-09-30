@@ -369,7 +369,8 @@ cdef inline void RHS(double t, double *y, double *ydot):
 cpdef list pythonsolve(
         np.ndarray[np.double_t, ndim=1] ts,
         np.ndarray[np.complex_t, ndim=2] y0,
-        long mxsteps, double rtol, double atol):
+        long mxsteps, double rtol, double atol,
+        progressbar):
     if ts[0] == 0:
         ts = ts[1:]
         res = [y0]
@@ -382,8 +383,10 @@ cpdef list pythonsolve(
     for t in ts:
         cvsi_step(instance, t)
         res.append(np.copy(_y0))
+        progressbar.step()
     cvsi_destroy(instance)
 
+    progressbar.stop()
     return res
 """
 class ODESolver(BaseCythonFunction):

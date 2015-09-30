@@ -1,14 +1,6 @@
 import datetime
 import sys # TODO maybe print to stderr?
 
-class DoNothingBar():
-    def __init__(self, *args):
-        pass
-    def step(self):
-        pass
-    def stop(self):
-        pass
-
 class ProgressBar():
     def __init__(self, steps):
         self.start = datetime.datetime.now()
