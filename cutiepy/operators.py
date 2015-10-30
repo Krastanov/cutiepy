@@ -2,7 +2,7 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from .symbolic import Operator
 
-SPARSITY_N_CUTOFF = 6
+SPARSITY_N_CUTOFF = 600 # TODO lower after fixing sparse matrices
 
 def sparsify(mat):
     assert SPARSITY_N_CUTOFF > 5, 'The SPARSITY_N_CUTOFF is set to a very low number.'
@@ -31,6 +31,10 @@ def identity(N):
                     N,
                     sparsify(np.eye(N,dtype=complex)))
 
+def randomH(N):
+    m = np.random.random([N,N]) + 1j*np.random.random([N,N])
+    m = (m + np.conj(m.T))/2
+    return Operator.anon(N, sparsify(m))
 
 s_m = np.array([[0, 0 ],[1 , 0]],dtype=complex)
 s_p = np.array([[0, 1 ],[0 , 0]],dtype=complex)

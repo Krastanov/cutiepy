@@ -38,6 +38,9 @@ with latex. ``_repr_latex_`` calls the recursive multimethod ``latex`` in the
 general case. If additional information needs to be printed ``_repr_latex_``
 can be overwritten as it is never called recursively. ``latex`` uses the
 private method ``_latex``.
+
+Classes starting with `_CG_` are only for the code generator, not for human
+use.
 '''
 
 import functools
@@ -215,6 +218,10 @@ class Node(Expr, tuple):
         return self.__repr__()
     def _shape(self):
         shapetype(self)._dim_to_shape(sum(dims(self)))
+
+
+class _CG_Node(Node):
+    pass
 
 
 class Add(Node):
@@ -441,7 +448,7 @@ class Pow(Node):
         return dims(self[0])
 
     def _latex(self):
-        return '{%s}^{%s}'%(self)
+        return r'{ \left( %s \right) }^{%s}'%(latex(self[0]), latex(self[1]))
 
 
 class Dot(Node):
@@ -619,6 +626,44 @@ class TensorProd(Node):
 tensor = TensorProd
 
 
+class Commutator(Node):
+    def __new__(cls, A, B):
+        if A == B:
+            return 0
+        return super(Commutator, cls).__new__(cls, A, B)
+
+    def _postcanon(self):
+        assert shapetype(self[0]) == shapetype(self[1]) == Operator, '%s should contain only Operators.'%(self,)
+        assert dims(self[0]) == dims(self[1]), '%s contains operators of incompatible dimmensions.'%(self,)
+
+    def _shapetype(self):
+        return shapetype(self[0])
+
+    def _dims(self):
+        return dims(self[0])
+
+    def _latex(self):
+        return r'\left[ {%s}, {%s} \right]'%(latex(self[0]), latex(self[1]))
+
+
+class _CG_AppliedLindbladSuperoperator(_CG_Node):
+    def __new__(cls, C, rho):
+        if C == 0 or rho == 0:
+            return 0
+        return super(_CG_AppliedLindbladSuperoperator, cls).__new__(cls, C, rho)
+
+    def _postcanon(self):
+        assert shapetype(self[0]) == Operator, '%s should contain an Operator as a collapse operator.'%(self,)
+        assert shapetype(self[1]) == Operator, '%s should contain an Operator as a density matrix.'%(self,)
+        assert dims(self[0]) == dims(self[1]), 'The collapse operator and the density matrix are not of the same dimensions in %s.'%(self,)
+
+    def _shapetype(self):
+        return Operator
+
+    def _dims(self):
+        return dims(self[0])
+
+
 class Trace(Node):
     pass
 
@@ -720,6 +765,9 @@ def shape(expr):
     if isscalar(expr):
         return ()
     return shapetype(expr)._dim_to_shape(dim(expr))
+
+def size(expr):
+    return functools.reduce(operator.mul, shape(expr))
 
 def latex(expr):
     if isnumber(expr):

@@ -13,7 +13,7 @@ from scipy.sparse import csr_matrix
 
 import cutiepy
 from .symbolic import (Scalar, NotScalar, ScalarFunction, Add, Mul, Pow, Dot,
-        TensorProd, dim, shape, isnumerical)
+        TensorProd, shape, isnumerical, isscalar, _CG_AppliedLindbladSuperoperator)
 
 
 DEBUG = False
@@ -43,10 +43,10 @@ base_cython_function_template = '''
 cimport numpy as np
 import numpy as np
 from libc.math cimport sin, cos, exp, sinh, cosh, tan, tanh, log
-from scipy.linalg.cython_blas cimport zgemv
+from scipy.linalg.cython_blas cimport zgemv, zgemm
 
 cdef int iONE=1, iZERO=0
-cdef double complex zONE=1, zZERO=0
+cdef double complex zONE=1, zZERO=0, zNHALF=-0.5
 
 # Declaration of global variables for
 # - intermediate results
@@ -98,7 +98,7 @@ class BaseCythonFunction():
                        for _ in self.predefined_constants)
         return s if s else '# no global declarations'
     def intermediate_results_globals_s(self):
-        s = ', '.join(_.name for _ in self.intermediate_results)
+        s = ', '.join(_.name for _ in self.intermediate_results[:-1])
         return 'global %s'%s if s else '# no intermediate results globals'
     def predefined_constants_globals_s(self):
         s = ', '.join(_.name for _ in self.predefined_constants)
@@ -160,14 +160,14 @@ class BaseCythonFunction():
                 f.flush()
                 folder, filename = os.path.split(f.name)
                 extname, _ = os.path.splitext(filename)
-                extension = Extension(extname,
+                self._extension = Extension(extname,
                               sources=[filename],
                               include_dirs=[os.path.join(os.path.dirname(cutiepy.__file__), 'include')],
                               libraries=["sundials_cvode", "sundials_nvecserial"],
                               extra_compile_args=["-O3"]
                             )
                 try:
-                    module_path = pyx_to_dll(filename, ext=extension)
+                    module_path = pyx_to_dll(filename, ext=self._extension)
                 except Exception as e:
                     raise e
                 finally:
@@ -233,10 +233,28 @@ def _(expr, func):
         func.predefined_constants_num.extend([num.data, num.indptr, num.indices])
         func.return_value = ret
     else: # can be both and argument or a predefined constant
-        ret = TypedName('double complex [:, :]', uid, 'np.zeros(%s, dtype=np.complex)'%(shape(expr),))
+        ret = TypedName('double complex [:, :]', uid, 'np.empty(%s, dtype=np.complex)'%(shape(expr),))
         func.arguments.append(ret)
         func.return_value = ret
     return func
+
+@_generate_cython.register(Pow)
+def _(expr, func):
+    if isscalar(expr):
+        uid = next(func.uid)
+        arg =   generate_cython(expr[0], func).return_value
+        power = generate_cython(expr[1], func).return_value
+        ret = TypedName('double', uid, '0')
+        func.intermediate_results.append(ret)
+        func.expressions.append('%s = (%s)**(%s)'%(
+            uid,
+            arg.name,
+            power.name
+            ))
+        func.return_value = ret
+        return func
+    else: # TODO do better by nesting squareing  of matrices
+        return _generate_cython(super(Dot, Dot).__new__(Dot, *[expr[0]]*expr[1]), func) # TODO encapsulate the "use super to skip canonicalization" trick
 
 def variadic_add_m(args, out):
     return '''# {out} = {sum_comment}
@@ -254,7 +272,7 @@ def _(expr, func):
     ret_values = [generate_cython(_, func).return_value for _ in expr]
     uid = next(func.uid)
     s = shape(expr)
-    alloc = 'np.zeros(%s, dtype=np.complex)'%(s,) if s else '0'
+    alloc = 'np.empty(%s, dtype=np.complex)'%(s,) if s else '0'
     ret = TypedName(ret_values[-1].type, uid, alloc)
     func.intermediate_results.append(ret)
     if s:
@@ -279,7 +297,7 @@ def _(expr, func):
     ret_values = [generate_cython(_, func).return_value for _ in expr]
     uid = next(func.uid)
     s = shape(expr)
-    alloc = 'np.zeros(%s, dtype=np.complex)'%(s,) if s else '0'
+    alloc = 'np.empty(%s, dtype=np.complex)'%(s,) if s else '0'
     ret = TypedName(ret_values[-1].type, uid, alloc)
     func.intermediate_results.append(ret)
     if s:
@@ -295,7 +313,10 @@ def dot(a, b, out):
     return '''# {out} = {a}.{b}
     ii = {a}.shape[0]
     jj = {a}.shape[1]
-    zgemv('N', &ii, &jj, &zONE, &{a}[0,0], &ii, &{b}[0,0], &iONE, &zZERO, &{out}[0,0], &iONE)'''.format(
+    kk = {b}.shape[1]
+    zgemm('N', 'N', &kk, &ii, &jj, &zONE, &{b}[0,0], &kk, &{a}[0,0], &jj, &zZERO, &{out}[0,0], &kk)'''.format(
+    # Commented out col-major order (BLAS default):
+    #zgemm('N', 'N', &ii, &kk, &jj, &zONE, &{a}[0,0], &ii, &{b}[0,0], &jj, &zZERO, &{out}[0,0], &ii)
     out = out.name,
     a = a.name,
     b = b.name)
@@ -316,12 +337,13 @@ def dot_sparse(csr, vec, out):
     vec = vec.name)
 @_generate_cython.register(Dot)
 def _(expr, func):
-    if len(expr) != 2:
-        raise NotImplementedError('Can not translate the dot products of more than two matrices %s to cython.'%expr)
-    mat_expr, vec_expr = expr
+    if len(expr) != 2: # TODO verify this is the optimal dot product (document when it is and when it is not)
+        mat_expr, vec_expr = expr[0], Dot(*expr[1:])
+    else:
+        mat_expr, vec_expr = expr
     mat = generate_cython(mat_expr, func).return_value
     vec = generate_cython(vec_expr, func).return_value
-    alloc = 'np.zeros(%s, dtype=np.complex)'%(shape(expr),) if shape(expr) else '0'
+    alloc = 'np.empty(%s, dtype=np.complex)'%(shape(expr),) if shape(expr) else '0'
     uid = next(func.uid)
     ret = TypedName(vec.type, uid, alloc)
     func.intermediate_results.append(ret)
@@ -330,6 +352,36 @@ def _(expr, func):
         func.expressions.append(dot_sparse(mat, vec, ret))
     else:
         func.expressions.append(dot(mat, vec, ret))
+    return func
+
+def applied_lindblad(c_op, rho, out):
+    return '''# {out} = Lindblad({c_op}).{rho}
+    ii = {out}.shape[0]
+    # tmp = c.rho
+    zgemm('N', 'N', &ii, &ii, &ii, &zONE, &{rho}[0,0], &ii, &{c_op}[0,0], &ii, &zZERO, &{out}_tmp[0,0], &ii)
+    # out = tmp.c'  # out = c.rho.c'
+    zgemm('C', 'N', &ii, &ii, &ii, &zONE, &{c_op}[0,0], &ii, &{out}_tmp[0,0], &ii, &zZERO, &{out}[0,0], &ii)
+    # tmp = c'.c
+    zgemm('N', 'C', &ii, &ii, &ii, &zONE, &{c_op}[0,0], &ii, &{c_op}[0,0], &ii, &zZERO, &{out}_tmp[0,0], &ii)
+    # out += rho.tmp += tml.rho
+    zgemm('N', 'N', &ii, &ii, &ii, &zNHALF, &{rho}[0,0], &ii, &{out}_tmp[0,0], &ii, &zONE, &{out}[0,0], &ii)
+    zgemm('N', 'N', &ii, &ii, &ii, &zNHALF, &{out}_tmp[0,0], &ii, &{rho}[0,0], &ii, &zONE, &{out}[0,0], &ii)
+    '''.format(
+    out = out.name,
+    c_op = c_op.name,
+    rho = rho.name)
+@_generate_cython.register(_CG_AppliedLindbladSuperoperator)
+def _(expr, func):
+    c_op = generate_cython(expr[0], func).return_value
+    rho  = generate_cython(expr[1], func).return_value
+    alloc = 'np.empty(%s, dtype=np.complex)'%(shape(expr),)
+    uid = next(func.uid)
+    ret_tmp = TypedName(rho.type, uid+'_tmp', alloc)
+    ret = TypedName(rho.type, uid, alloc)
+    func.intermediate_results.append(ret_tmp)
+    func.intermediate_results.append(ret)
+    func.return_value = ret
+    func.expressions.append(applied_lindblad(c_op,rho,ret))
     return func
 
 @_generate_cython.register(ScalarFunction)
@@ -347,6 +399,22 @@ def _(expr, func):
     return func
 
 
+ndarray_function_template = """
+cpdef np.ndarray[np.complex_t, ndim=2] pythoncall({args}):
+    cdef np.ndarray[np.complex_t, ndim=2] result = np.empty({result_shape}, complex)
+    generated_function({args}, result)
+    return result
+"""
+class NDArrayFunction(BaseCythonFunction):
+    def __str__(self):
+        string = super(NDArrayFunction, self).__str__()
+        string += ndarray_function_template.format(
+            result_shape = str(shape(self.rev_memoized()[self.return_value])),
+            args = ','.join('_%d'%i for i in range(len(self.arguments)))
+            )
+        return string
+
+
 linear_ode_solver_template = """
 ctypedef void rhs_t(double t, double *y, double *ydot)
 cdef extern from "cvode_simple_interface.h":
@@ -361,8 +429,8 @@ cdef extern from "cvode_simple_interface.h":
 
 cdef inline void RHS(double t, double *y, double *ydot):
     generated_function(t,
-                       <double complex [:{neq}, :1]> <double complex *> y,
-                       <double complex [:{neq}, :1]> <double complex *> ydot)
+                       <double complex [:{shape[0]}, :{shape[1]}]> <double complex *> y,
+                       <double complex [:{shape[0]}, :{shape[1]}]> <double complex *> ydot)
     # TODO The casts above need to allocate new memview structs each time
     # It is noticeable on 2x2 matrices (10%), not noticeable otherwise
 
@@ -393,7 +461,6 @@ class ODESolver(BaseCythonFunction):
     def __str__(self):
         string = super(ODESolver, self).__str__()
         string += linear_ode_solver_template.format(
-            return_value = self.return_value,
-            neq = '%d'%dim(self.rev_memoized()[self.arguments[-1]])
+            shape = shape(self.rev_memoized()[self.arguments[-1]])
             )
         return string

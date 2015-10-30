@@ -7,8 +7,8 @@ import numpy as np
 import scipy
 import scipy.linalg
 
-from .symbolic import (Atom, Scalar, ScalarFunction,
-        Add, Mul, Pow, Dot, TensorProd, shapetype, dims, split_by_predicate,
+from .symbolic import (_CG_Node, Atom, Scalar, ScalarFunction,
+        Add, Mul, Pow, Dot, Commutator, TensorProd, shapetype, dims, split_by_predicate,
         isscalar, isnumber, isnumerical, numerical)
 
 
@@ -22,6 +22,10 @@ def _(expr):
     return expr
 
 @evalf.register(Atom)
+def _(expr):
+    return expr
+
+@evalf.register(_CG_Node)
 def _(expr):
     return expr
 
@@ -52,15 +56,18 @@ def _(expr):
             if isnumber(num):
                 return num*prod(notnumericals)
             return shapetype(expr).anon(dims(expr), num)*prod(notnumericals)
-        return sum(notnumericals)
+        return prod(notnumericals)
 
 @evalf.register(Pow)
 def _(expr):
     b, e = expr
+    b, e = evalf(b), evalf(e)
     if isscalar(b):
-        return evalf(b)**evalf(e)
+        return b**e
     elif isinstance(e, numbers.Integral):
-        return functools.reduce(np.dot, [evalf(b)]*int(e))
+        if isnumerical(b):
+            return b.anon(dims(b), functools.reduce(np.dot, [numerical(b)]*int(e)))
+        return expr
     raise NotImplementedError('Can not raise a matrix to a non-integer power in %s.'%(expr,))
 
 @evalf.register(Dot)
@@ -76,6 +83,10 @@ def _(expr):
         else:
             reduced.extend(group)
     return Dot(*reduced)
+
+@evalf.register(Commutator)
+def _(expr):
+    return evalf(Dot(expr[0], expr[1]) - Dot(expr[1], expr[0]))
 
 kron = lambda l,r: scipy.sparse.kron(l,r, 'csr')
 @evalf.register(TensorProd)
