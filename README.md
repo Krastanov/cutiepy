@@ -1,0 +1,1 @@
+A small package for numerical simulation of quantum systems. Created as an alternative to `qutip` due to code generation limitations in the latter. It was an amusing experiment in code generation, but now Tensorflow and Theano support complex sparse matrices, so you can just use them with a bit of a wrapper. Or QuantumOptics.jl in Julia.
